@@ -1,0 +1,250 @@
+---
+title: "Simulations"
+output: html_document
+date: "2023-11-06"
+---
+
+```{r}
+library(tidyverse)
+
+set.seed(1)
+```
+
+# Simulation: Mean and SD for One N
+In writing functions we wrote a short function to simulate data from a normal distribution, and return estimates of the mean and standard deviation. Specifically, we generate data from
+xi∼N[μ,σ] for subjects 1≤i≤n and return estimates μ̂ ,σ̂ . That function is below.
+
+Mu = population mean, Sigma = population SD
+
+```{r}
+sim_mean_sd = function(n, mu = 2, sigma = 3) {
+  
+  sim_data = tibble(
+    x = rnorm(n, mean = mu, sd = sigma),
+  )
+  
+  sim_data |> 
+    summarize(
+      mu = mean(x),
+      sigma = sd(x)
+    )
+}
+```
+
+Important statistical properties of estimates μ̂ are established under the conceptual framework of repeated sampling. If you could draw from a population over and over, your estimates will have a known distribution.
+ 
+ μ̂ ∼[μ,σ/√n]
+
+Because our simulation design generates observations from a Normal distribution we also know that the estimates follow a Normal distribution, although that’s not guaranteed in general. You can do some work to understand the distribution of σ̂ , but it’s … messier.
+
+In the real world, drawing samples is time consuming and costly, so “repeated sampling” remains conceptual. On a computer, though, drawing samples is pretty easy. That makes simulation an appealing way to examine the statistical properties of your estimators.
+
+Let’s run `sim_mean_sd()` 100 times to see the effect of randomness in xi on estimates μ̂ ,σ̂ .
+
+```{r}
+output = vector("list", length = 100)
+
+for (i in 1:100) {
+  
+  output[[i]] = sim_mean_sd(n = 30)
+  
+}
+
+sim_results = bind_rows(output)
+
+sim_results |> 
+  ggplot(aes(x = mu)) + geom_density()
+
+```
+
+Taking a look at the `for` loop we used to create these results, you might notice that there’s no `input` list – the sequence is used to keep track of the output but doesn’t affect the computation performed inside the `for` loop. We can still use `map` to carry this out, of course – we’ll just be mapping over something that doesn’t change.
+
+In the code below, I create a data frame with rows for 100 iterations; the sample size column is fixed at 30 in every row. Then, using ideas from iteration and list columns, I’ll map my `sim_mean_sd` function over the `sample_size` column to replicate the simulation in the previous loop.
+
+```{r}
+sim_results_df = 
+  expand_grid(
+    sample_size = 30,
+    iter = 1:100
+  )  |> 
+  mutate(
+    estimate_df = map(sample_size, sim_mean_sd)
+  ) |> 
+  unnest(estimate_df)
+```
+
+Critically, the result is a dataframe which can be manipulated or used in ways we’re now pretty familiar with.
+
+```{r}
+sim_results_df |> 
+  pivot_longer(
+    mu:sigma,
+    names_to = "parameter", 
+    values_to = "estimate") |> 
+  group_by(parameter) |> 
+  summarize(
+    emp_mean = mean(estimate),
+    emp_sd = sd(estimate)) |> 
+  knitr::kable(digits = 3)
+```
+
+This is great! We’ve seen how our estimates are distributed under our simulation scenario, and can compare empirical results to theoretical ones. In this way, we can build intuition for fundamental statistical procedures under repeated sampling in a way that’s not possible with single data sets.
+
+In cases like this, where the inputs to the function don’t change, using an “anonymous” function can be a helpful shorthand. Here the syntax `(i)` defines a function with the input `i`, and that function just runs `sim_mean_sd(30, 2, 3)` without actually using `i`.
+
+```{r}
+sim_results_df =   
+  map(1:100, \(i) sim_mean_sd(30, 2, 3)) |> 
+  bind_rows()
+```
+
+# Simulation: Mean for Several Ns
+Sample size makes a huge difference on the variance of estimates in SLR (and pretty much every statistical method). Let’s try to clarify that effect through simulating at a few sample sizes.
+
+Building on the code above, I’ll set up a tibble with iterations and the sample sizes I want to investigate using `expand_grid`. From there, the steps are similar to they were before – we’ll apply the `sim_mean_sd` function to each iteration of each sample size and `unnest` the result.
+
+```{r}
+sim_results_df = 
+  expand_grid(
+    sample_size = c(30, 60, 120, 240),
+    iter = 1:1000
+  ) |> 
+  mutate(
+    estimate_df = map(sample_size, sim_mean_sd)
+  ) |> 
+  unnest(estimate_df)
+```
+
+Let’s take a look at what we’ve accomplished in our simulations! First I’ll take a look at the distribution of mean estimates across sample sizes.
+
+```{r}
+sim_results_df |> 
+  mutate(
+    sample_size = str_c("n = ", sample_size),
+    sample_size = fct_inorder(sample_size)) |> 
+  ggplot(aes(x = sample_size, y = mu, fill = sample_size)) + 
+  geom_violin()
+```
+
+These estimates are centered around the truth (2) for each sample size, and the width of the distribution shrinks as sample size grows.
+
+Lastly I’ll look at the empirical mean and variance of these estimates.
+
+```{r}
+sim_results_df |> 
+  pivot_longer(
+    mu:sigma,
+    names_to = "parameter", 
+    values_to = "estimate") |> 
+  group_by(parameter, sample_size) |> 
+  summarize(
+    emp_mean = mean(estimate),
+    emp_var = var(estimate)) |> 
+  knitr::kable(digits = 3)
+```
+
+These values are consistent with the formula presented for the distribution of the sample mean. This kind of check is a useful way to support derivations (although they don’t serve as a formal proof in any way).
+
+# Simualtion: Simple Linear Regression (SLR) for One N
+The distribution of the sample mean is critical in statistics, but behaves in often familiar ways. Next we’ll use simulations to explore another very important setting that is sometimes surprising. In particular, we’ll use a function to we generate data from
+
+yi=β0+β1xi+ϵi
+
+for subjects 1≤i≤n with ϵi∼N[0,1] and return estimates β̂ 0,β̂ 1.
+
+One implementation of this goal is shown below. This takes the sample size and true regression coefficients as inputs, simulates both x and y, fits the regression, and returns the estimated coefficients.
+
+```{r}
+sim_regression = function(n, beta0 = 2, beta1 = 3) {
+  
+  sim_data = 
+    tibble(
+      x = rnorm(n, mean = 1, sd = 1),
+      y = beta0 + beta1 * x + rnorm(n, 0, 1)
+    )
+  
+  ls_fit = lm(y ~ x, data = sim_data)
+  
+  tibble(
+    beta0_hat = coef(ls_fit)[1],
+    beta1_hat = coef(ls_fit)[2]
+  )
+}
+```
+
+As for the sample mean, the repeated sampling framework can be used to establish properties of estimates β̂ 0,β̂ 1. If you could draw repeatedly from the population, your estimates will have a known mean and covariance:
+
+β̂ 0∼[β0,σ2(1n+x¯∑(xi−x¯)2)] and β̂ 1∼[β1,σ2∑(xi−x¯)2]
+
+(Because our simulation design generates errors from a Normal distribution we also know that the estimates follow a Normal distribution, although that’s not guaranteed by least squares estimation.)
+
+Again, though, “repeated sampling” remains conceptual for regression – but we can draw samples easily in simulations. We’ll use `map` to run `sim_regression()` 500 times and show the effect of randomness in ϵ on estimates β̂ 0,β̂ 1
+
+```{r}
+sim_results_df = 
+  expand_grid(
+    sample_size = 30,
+    iter = 1:500
+  ) |> 
+  mutate(
+    estimate_df = map(sample_size, sim_regression)
+  ) |> 
+  unnest(estimate_df)
+```
+
+Next we’ll plot the estimated coefficients against each other (β̂ 0 on the x axis and β̂ 1 on the y axis). Both estimators are “unbiased”, meaning that on average you get the right answer. But what’s striking about this plot is that the estimated coefficients are inversely correlated – a lower estimate of the intercept tends to imply a higher estimate of the slope.
+
+```{r}
+sim_results_df |> 
+  ggplot(aes(x = beta0_hat, y = beta1_hat)) + 
+  geom_point()
+```
+
+# Varying Two Simulation Parameters
+In our last example, we’ll consider varying two parameters – the sample size and the true standard deviation in our simulation looking at the mean and SD. We can use `expand_grid()` again to consider all possible combinations of sample size and true SD, while also defining a variable to look at 1000 iterations of each combination.
+
+The key step in this code chunk is the use of `map2`, which allows mapping over two inputs to a function. We can also use an “anonymous” function which passes inputs `n` and `sd` to specific arguments in the `sim_mean_sd()` function.
+
+```{r}
+sim_results_df = 
+  expand_grid(
+    sample_size = c(30, 60, 120, 240),
+    true_sd = c(6, 3),
+    iter = 1:1000
+  ) |> 
+  mutate(
+    estimate_df = 
+      map2(sample_size, true_sd, \(n, sd) sim_mean_sd(n = n, sigma = sd))
+  ) |> 
+  unnest(estimate_df)
+```
+
+As before, once we have the results of this simulation, we can use graphical summaries to understand how the sample size and true SD relate to the distribution of the sample mean. For both true SDs, increasing the sample size results in a narrower distribution, and the distribution of the sample mean is wider when the true SD is larger.
+
+```{r}
+sim_results_df |> 
+  mutate(
+    true_sd = str_c("True SD: ", true_sd),
+    true_sd = fct_inorder(true_sd),
+    sample_size = str_c("n = ", sample_size),
+    sample_size = fct_inorder(sample_size)) |> 
+  ggplot(aes(x = sample_size, y = mu, fill = sample_size)) + 
+  geom_violin() + 
+  facet_grid(. ~ true_sd)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
